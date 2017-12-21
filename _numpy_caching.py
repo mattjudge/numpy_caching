@@ -3,58 +3,80 @@ import logging
 import os
 import errno
 from functools import wraps
+from inspect import getcallargs
 from hashlib import md5
 from zipfile import BadZipFile
-
 import numpy as np
 
 CACHE_DIR = "./_cache/"
 
-# ensure cache directory exists
-try:
-    os.makedirs(CACHE_DIR)
-except OSError as e:
-    if e.errno != errno.EEXIST:
-        raise
+
+def make_dir(path):
+    try:
+        os.makedirs(path)
+    except OSError as e:
+        if e.errno != errno.EEXIST:
+            raise
+
+
+def set_cache_dir(path):
+    global CACHE_DIR
+    CACHE_DIR = path
+    make_dir(CACHE_DIR)
 
 
 def _save_numpy(path, values, compress):
-    if type(values) is not tuple:
-        values = (values,)
-    if not all(isinstance(v, np.ndarray) for v in values):
-        raise TypeError("Results returned by cached function must all be of type np.ndarray") from None
+    arr_vals = np.array({0: values})  # maintain object structure
     if compress:
-        return np.savez_compressed(path, *values)
+        return np.savez_compressed(path, arr_vals)
     else:
-        return np.savez(path, *values)
+        return np.savez(path, arr_vals)
 
 
 def _load_numpy(path):
-    npzfile = np.load(path)
-    files = npzfile.files
-    if len(files) == 1:
-        return npzfile[files[0]]
-    else:
-        # multiple values
-        return tuple(npzfile[f] for f in files)
+    with np.load(path) as npzfile:
+        # get the array of the first (only) stored 'file'
+        cached_item = npzfile.items()[0][1]
+        # get the value of key used in _save_numpy
+        res = cached_item.item()[0]
+        return res
+
+
+def _trim_str_len(s, max_len):
+    return s[:max_len] if len(s) > max_len else s
 
 
 def _func_hash_md5(func, args, kwargs):
-    return md5(str(
-        (func.__name__, args, frozenset(kwargs.items()))
-    ).encode()).hexdigest()
+    callargs = getcallargs(func, *args, **kwargs)
+    hashargs = tuple(
+        (k,
+         md5(v.data.tobytes()).hexdigest() if isinstance(v, np.ndarray) else md5(str(v).encode()).hexdigest()
+         ) for k, v in sorted(callargs.items())
+    )
+    return md5(str((func.__name__, hashargs)).encode()).hexdigest()
 
 
 def _func_hash_readable(func, args, kwargs):
-    return '{fnm}_{args}_{kwargs}_h{hash}'.format(
+    max_var_len = 20
+    max_filename_len = 100
+
+    def stringify_var(var):
+        # remove non-alphanumeric characters
+        s = ''.join(x for x in str(var) if x.isalnum())
+        return _trim_str_len(s, max_var_len)
+
+    slug = '{fnm}_{args}_{kwargs}'.format(
         fnm=func.__name__,
-        args='_'.join(str(x) for x in args),
-        kwargs='_'.join('_'.join(str(y) for y in kw) for kw in kwargs.items()),
+        args='_'.join(map(stringify_var, args)),
+        kwargs='_'.join('_'.join(map(stringify_var, kw)) for kw in kwargs.items())
+    )
+    return '{slug}_{hash}'.format(
+        slug=_trim_str_len(slug, max_filename_len - 11),  # minus hash and file extension
         hash=_func_hash_md5(func, args, kwargs)[:6]
     )
 
 
-def cache_numpy_result(enable_cache, write_cache=True, force_update=False, compress=True, hash_method='hash'):
+def np_cache(enable_cache, write_cache=True, force_update=False, compress=True, hash_method='hash'):
     """
     Cache any function that has hashable (or string representable) arguments and returns a numpy object
     :param enable_cache: Enable caching of function with this decorator
@@ -94,31 +116,26 @@ def cache_numpy_result(enable_cache, write_cache=True, force_update=False, compr
 
             if force_update:
                 logging.debug("Cache: Forcing update on {}".format(hash_key))
-                result = run_func_update_cache()
+                return run_func_update_cache()
             else:
                 try:
                     result = _load_numpy(cache_path)
                     logging.debug("Cache: Found {}".format(hash_key))
+                    return result
                 except (IOError, FileNotFoundError):
                     logging.debug("Cache: Not found {}".format(hash_key))
-                    result = run_func_update_cache()
+                    return run_func_update_cache()
                 except BadZipFile:
                     logging.warning("Cache: Corrupted file, ignoring {}".format(hash_key))
-                    result = run_func_update_cache()
-            return result
+                    return run_func_update_cache()
         return wrapper
 
     return decorator
 
 
+# ensure cache directory exists
+make_dir(CACHE_DIR)
+
+
 if __name__ == '__main__':
     pass
-    # logging.basicConfig(level=logging.DEBUG)
-    #
-    # @cache_numpy_result(True, hash_method='readable')
-    # def test(a, b):
-    #     return np.arange(a), np.arange(b)
-    #
-    # print(test(4, 5))
-    # print(test(5, 4))
-    # print(test(4, 5))
