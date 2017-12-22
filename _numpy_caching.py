@@ -3,7 +3,6 @@ import logging
 import os
 import errno
 from functools import wraps
-from inspect import getcallargs
 from hashlib import md5
 from zipfile import BadZipFile
 import numpy as np
@@ -46,14 +45,25 @@ def _trim_str_len(s, max_len):
     return s[:max_len] if len(s) > max_len else s
 
 
-def _func_hash_md5(func, args, kwargs):
-    callargs = getcallargs(func, *args, **kwargs)
-    hashargs = tuple(
-        (k,
-         md5(v.data.tobytes()).hexdigest() if isinstance(v, np.ndarray) else md5(str(v).encode()).hexdigest()
-         ) for k, v in sorted(callargs.items())
-    )
-    return md5(str((func.__name__, hashargs)).encode()).hexdigest()
+def _func_hash(func, args, kwargs, _hash=md5,
+               kwd_mark='__np_cache_kwd_mark'.encode(),
+               arg_mark='__np_cache_arg_mark'.encode()):
+    def hash_arg(a):
+        if isinstance(a, np.ndarray):
+            return _hash(a.data.tobytes()).digest()
+        else:
+            return _hash(str(a).encode()).digest()
+
+    # key = _hash(func.__code__.co_code).digest()
+    key = (func.__module__ + '__np_cache_fnm_mark' + func.__name__).encode()
+    key += arg_mark
+    for v in args:
+        key += hash_arg(v)
+    if kwargs:
+        key += kwd_mark
+        for k, v in kwargs.items():
+            key += k.encode() + hash_arg(v)
+    return _hash(key).hexdigest()
 
 
 def _func_hash_readable(func, args, kwargs):
@@ -72,7 +82,7 @@ def _func_hash_readable(func, args, kwargs):
     )
     return '{slug}_{hash}'.format(
         slug=_trim_str_len(slug, max_filename_len - 11),  # minus hash and file extension
-        hash=_func_hash_md5(func, args, kwargs)[:6]
+        hash=_func_hash(func, args, kwargs)[:6]
     )
 
 
@@ -88,7 +98,7 @@ def np_cache(enable_cache, write_cache=True, force_update=False, compress=True, 
     """
 
     valid_hash_funcs = {
-        'hash': _func_hash_md5,
+        'hash': _func_hash,
         'readable': _func_hash_readable
     }
     try:

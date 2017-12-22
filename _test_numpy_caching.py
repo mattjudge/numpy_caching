@@ -102,6 +102,26 @@ class TestCaching(unittest.TestCase):
         mtime2 = _cache_mod_times()[0]
         self.assertNotEqual(mtime1, mtime2)
 
+    def test_cache_arg_readable(self):
+        def f(x, y):
+            nonlocal calls
+            calls += 1
+            return x*y
+        cf = np_cache(True, hash_method='readable')(f)
+        args = 2, 3
+        calls = 0
+        expected = 6
+        self.assertEqual(expected, cf(*args))
+        self.assertEqual(1, calls)
+        self.assertEqual(1, _cache_length())
+        mtime1 = _cache_mod_times()[0]
+
+        self.assertEqual(expected, cf(*args))
+        self.assertEqual(1, calls)
+        self.assertEqual(1, _cache_length())
+        mtime2 = _cache_mod_times()[0]
+        self.assertEqual(mtime1, mtime2)
+
     def test_numpy_args(self):
         def f(x, y):
             nonlocal calls
@@ -165,6 +185,9 @@ class TestCaching(unittest.TestCase):
         self.assertEqual(mtime1, mtime2)
 
     def test_kw_arguments(self):
+        # following behaviour of functools.lru_cache
+        # PEP 468: Preserving Keyword Argument Order
+
         def f(x, y):
             nonlocal calls
             calls += 1
@@ -178,8 +201,8 @@ class TestCaching(unittest.TestCase):
         self.assertEqual(expect, cf(2, y=3))
         self.assertEqual(expect, cf(x=2, y=3))
         self.assertEqual(expect, cf(y=3, x=2))
-        self.assertEqual(1, calls)
-        self.assertEqual(1, _cache_length())
+        self.assertEqual(4, calls)
+        self.assertEqual(4, _cache_length())
 
     def test_return_values(self):
         retvals = (
